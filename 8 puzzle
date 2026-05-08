@@ -1,0 +1,73 @@
+import copy
+
+class EightPuzzle:
+    def __init__(self, board):
+        # board là mảng 2 chiều 3x3. Số 0 đại diện cho ô trống.
+        self.board = board
+        self.empty_pos = self.find_empty()
+
+    def find_empty(self):
+        """Tìm vị trí (hàng, cột) của ô trống (số 0)"""
+        for r in range(3):
+            for c in range(3):
+                if self.board[r][c] == 0:
+                    return (r, c)
+        return None
+
+    def get_possible_actions(self):
+        """Trả về các hành động hợp lệ dựa trên vị trí ô trống"""
+        r, c = self.empty_pos
+        actions = []
+        
+        # Kiểm tra các hướng di chuyển của ô trống
+        if c < 2: actions.append('R') # Sang phải
+        if r < 2: actions.append('D') # Xuống dưới
+        if c > 0: actions.append('L') # Sang trái
+        if r > 0: actions.append('U') # Lên trên
+        
+        return actions
+
+    def move(self, action):
+        """Thực hiện di chuyển và trả về một trạng thái mới"""
+        r, c = self.empty_pos
+        new_board = copy.deepcopy(self.board)
+        
+        if action == 'R':
+            new_board[r][c], new_board[r][c+1] = new_board[r][c+1], new_board[r][c]
+        elif action == 'D':
+            new_board[r][c], new_board[r+1][c] = new_board[r+1][c], new_board[r][c]
+        elif action == 'L':
+            new_board[r][c], new_board[r][c-1] = new_board[r][c-1], new_board[r][c]
+        elif action == 'U':
+            new_board[r][c], new_board[r-1][c] = new_board[r-1][c], new_board[r][c]
+            
+        return EightPuzzle(new_board)
+
+    def display(self):
+        for row in self.board:
+            print(row)
+        print("---------")
+
+# --- CHƯƠNG TRÌNH CHÍNH ---
+
+# Khởi tạo trạng thái giống trong ảnh (ô trống ở 0,0)
+# Giả sử số 0 là ô trống ở vị trí (0,0)
+initial_board = [
+    [0, 1, 2],
+    [5, 6, 4],
+    [8, 7, 3]
+]
+
+puzzle = EightPuzzle(initial_board)
+print("Trạng thái hiện tại:")
+puzzle.display()
+
+# Lấy các hành động hợp lệ
+actions = puzzle.get_possible_actions()
+print(f"Nếu State = {puzzle.empty_pos}, thì Action = {actions}")
+
+# Thử di chuyển sang phải (R)
+if 'R' in actions:
+    print("\nSau khi thực hiện hành động 'R':")
+    next_state = puzzle.move('R')
+    next_state.display()
