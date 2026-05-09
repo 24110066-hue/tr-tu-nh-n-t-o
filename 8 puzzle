@@ -53,7 +53,6 @@ puzzle.display()
 actions = puzzle.get_possible_actions()
 print(f"Nếu State = {puzzle.empty_pos}, thì Action = {actions}")
 
-# Thử di chuyển sang phải (R)
 if 'R' in actions:
     print("\nSau khi thực hiện hành động 'R':")
     next_state = puzzle.move('R')
