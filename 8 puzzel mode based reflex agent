@@ -1,0 +1,78 @@
+#https://github.com/24110066-hue/tr-tu-nh-n-t-o/new/main
+import random
+import copy
+state = None  
+model = None 
+rules = None   
+action = None
+history = []  
+
+GOAL = [[1, 2, 3], [4, 5, 6], [7, 8, 0]]
+
+def UPDATE_STATE(current_internal_state, last_action, percept, model_func):
+    """
+    Hàm cập nhật trạng thái nội tại.
+    Dựa trên: trạng thái cũ, hành động vừa làm, và cái nhìn thấy thực tế (percept).
+    """
+    if current_internal_state is None:
+        return percept
+    return percept
+
+def RULE_MATCH(current_state, rules_list):
+    """
+    Tìm hành động phù hợp dựa trên trạng thái hiện tại.
+    Model-based ở đây là: Né những trạng thái đã có trong history.
+    """
+    r, c = 0, 0
+    for i in range(3):
+        for j in range(3):
+            if current_state[i][j] == 0: r, c = i, j
+            
+    possible_moves = []
+    if r > 0: possible_moves.append("UP")
+    if r < 2: possible_moves.append("DOWN")
+    if c > 0: possible_moves.append("LEFT")
+    if c < 2: possible_moves.append("RIGHT")
+    valid_actions = []
+    for act in possible_moves:
+        predicted = model_predict(current_state, act)
+        if predicted not in history:
+            valid_actions.append(act)
+            
+    return random.choice(valid_actions if valid_actions else possible_moves)
+
+def model_predict(s, a):
+    """Hàm mô phỏng chuyển động của bảng (Model)"""
+    new_s = copy.deepcopy(s)
+    r, c = 0, 0
+    for i in range(3):
+        for j in range(3):
+            if new_s[i][j] == 0: r, c = i, j
+            
+    if a == "UP": new_s[r][c], new_s[r-1][c] = new_s[r-1][c], new_s[r][c]
+    elif a == "DOWN": new_s[r][c], new_s[r+1][c] = new_s[r+1][c], new_s[r][c]
+    elif a == "LEFT": new_s[r][c], new_s[r][c-1] = new_s[r][c-1], new_s[r][c]
+    elif a == "RIGHT": new_s[r][c], new_s[r][c+1] = new_s[r][c+1], new_s[r][c]
+    return new_s
+
+def MODEL_BASED_REFLEX_AGENT(percept):
+    global state, action, history
+
+    state = UPDATE_STATE(state, action, percept, model_predict)
+    history.append(copy.deepcopy(state))
+    selected_action = RULE_MATCH(state, None) 
+    
+    action = selected_action
+    return action
+current_percept = [[1, 2, 3], [0, 4, 6], [7, 5, 8]]
+
+for step in range(20):
+    print(f"\n--- Bước {step + 1} ---")
+    for row in current_percept: print(row)
+    
+    if current_percept == GOAL:
+        print("Đã tới đích!")
+        break
+    act = MODEL_BASED_REFLEX_AGENT(current_percept)
+    print(f"Hành động: {act}")
+    current_percept = model_predict(current_percept, act)
