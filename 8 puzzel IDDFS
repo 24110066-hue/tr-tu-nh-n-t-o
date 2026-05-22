@@ -1,0 +1,75 @@
+def get_blank(state):
+    for i in range(3):
+        for j in range(3):
+            if state[i][j] == 0:
+                return i, j
+
+def expand(state):
+    i, j = get_blank(state)
+    moves = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    children = []
+    for di, dj in moves:
+        ni, nj = i + di, j + dj
+        if 0 <= ni < 3 and 0 <= nj < 3:
+            new_state = [row[:] for row in state]
+            new_state[i][j], new_state[ni][nj] = new_state[ni][nj], new_state[i][j]
+            children.append(new_state)
+    return children
+
+def is_cycle(node, state):
+    while node:
+        if node['state'] == state:
+            return True
+        node = node['parent']
+    return False
+
+def dls(start_state, goal_state, limit):
+    frontier = [{'state': start_state, 'parent': None, 'depth': 0}]
+    cutoff_occurred = False
+    
+    while frontier:
+        node = frontier.pop()
+        
+        if node['state'] == goal_state:
+            return node
+        
+        if node['depth'] >= limit:
+            cutoff_occurred = True
+        else:
+            for child_state in expand(node['state']):
+                if not is_cycle(node, child_state):
+                    frontier.append({'state': child_state, 'parent': node, 'depth': node['depth'] + 1})
+    
+    return "cutoff" if cutoff_occurred else None
+
+def iddfs(start_state, goal_state):
+    for limit in range(100):
+        result = dls(start_state, goal_state, limit)
+        if result != "cutoff" and result is not None:
+            return result
+
+start = [
+    [1, 2, 3],
+    [4, 0, 6],
+    [7, 5, 8]
+]
+
+goal = [
+    [1, 2, 3],
+    [4, 5, 6],
+    [7, 8, 0]
+]
+
+result = iddfs(start, goal)
+
+if result:
+    path = []
+    curr = result
+    while curr:
+        path.append(curr['state'])
+        curr = curr['parent']
+    
+    for step in reversed(path):
+        for row in step:
+            print(row)
+        print()
