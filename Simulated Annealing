@@ -1,0 +1,245 @@
+import pygame
+import random
+import math
+
+WIDTH, HEIGHT = 1200, 750
+TILE_SIZE = 90
+MARGIN = 40
+
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRAY = (230, 230, 230)
+DARK_GRAY = (150, 150, 150)
+BLUE = (70, 130, 180)
+LIGHT_BLUE = (135, 206, 250)
+GREEN = (144, 238, 144)
+RED = (220, 20, 60)
+TEXT_COLOR = (40, 40, 40)
+
+G = ((1, 2, 3), (4, 5, 6), (7, 8, 0))
+
+pygame.init()
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("8-Puzzle: Simulated Annealing (Luyện kim)")
+font = pygame.font.SysFont("arial", 40, bold=True)
+small_font = pygame.font.SysFont("arial", 18)
+ui_font = pygame.font.SysFont("arial", 22, bold=True)
+title_font = pygame.font.SysFont("arial", 26, bold=True)
+
+def generate_random_state():
+    state = G
+    for _ in range(30):
+        neighbors = get_neighbors(state)
+        state, _ = random.choice(neighbors)
+    return state
+
+def get_manhattan_distance(state, goal):
+    distance = 0
+    for i in range(3):
+        for j in range(3):
+            val = state[i][j]
+            if val != 0:
+                for gi in range(3):
+                    for gj in range(3):
+                        if goal[gi][gj] == val:
+                            distance += abs(i - gi) + abs(j - gj)
+    return distance
+
+def get_neighbors(state):
+    neighbors = []
+    x, y = 0, 0
+    for i in range(3):
+        for j in range(3):
+            if state[i][j] == 0:
+                x, y = i, j
+                break
+                
+    directions = [(-1, 0, "Lên"), (1, 0, "Xuống"), (0, -1, "Trái"), (0, 1, "Phải")]
+    for dx, dy, move_name in directions:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < 3 and 0 <= ny < 3:
+            new_state = [list(row) for row in state]
+            new_state[x][y], new_state[nx][ny] = new_state[nx][ny], new_state[x][y]
+            neighbors.append((tuple(tuple(row) for row in new_state), move_name))
+    return neighbors
+
+def simulated_annealing(start, goal):
+    current = start
+    path = [(current, "Bắt đầu")]
+    explored = 0
+    
+    T = 100.0
+    alpha = 0.995
+    max_iter = 5000
+    
+    while current != goal and T > 0.001 and explored < max_iter:
+        neighbors = get_neighbors(current)
+        next_state, move = random.choice(neighbors)
+        explored += 1
+        
+        delta_E = get_manhattan_distance(next_state, goal) - get_manhattan_distance(current, goal)
+        
+        if delta_E < 0:
+            current = next_state
+            path.append((current, move))
+        else:
+            probability = math.exp(-delta_E / T)
+            if random.random() < probability:
+                current = next_state
+                path.append((current, f"{move} (Lùi)"))
+                
+        T *= alpha
+        
+    return path, explored, (current == goal)
+
+def draw_board(state, x_offset, y_offset, title_text):
+    title_surf = title_font.render(title_text, True, BLACK)
+    screen.blit(title_surf, (x_offset, y_offset - 35))
+    
+    for i in range(3):
+        for j in range(3):
+            val = state[i][j]
+            rect = pygame.Rect(x_offset + j * TILE_SIZE, y_offset + i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+            if val != 0:
+                pygame.draw.rect(screen, BLUE, rect, border_radius=10)
+                text = font.render(str(val), True, WHITE)
+                text_rect = text.get_rect(center=rect.center)
+                screen.blit(text, text_rect)
+            else:
+                pygame.draw.rect(screen, GRAY, rect, border_radius=10)
+            pygame.draw.rect(screen, BLACK, rect, 2, border_radius=10)
+
+def draw_button(text, rect, color, hover=False):
+    btn_color = LIGHT_BLUE if hover else color
+    pygame.draw.rect(screen, btn_color, rect, border_radius=8)
+    pygame.draw.rect(screen, BLACK, rect, 2, border_radius=8)
+    text_surf = ui_font.render(text, True, BLACK)
+    screen.blit(text_surf, text_surf.get_rect(center=rect.center))
+
+def main():
+    start_state = generate_random_state()
+    current_state = start_state
+    
+    path = []
+    history = []
+    step_idx = 0
+    is_animating = False
+    last_update = 0
+    algo_info = "Nhấn 'Tạo Random S' hoặc 'Chạy SA'."
+    
+    btn_random = pygame.Rect(380, 40, 180, 45)
+    btn_sa = pygame.Rect(580, 40, 180, 45)
+    btn_reset = pygame.Rect(780, 40, 180, 45)
+    btn_stop_play = pygame.Rect(380, 100, 380, 45)
+
+    running = True
+    while running:
+        screen.fill(WHITE)
+        mouse_pos = pygame.mouse.get_pos()
+
+        draw_board(current_state, 40, 80, "Trạng thái hiện tại")
+        draw_board(G, 40, 420, "Ma trận Đích (G)")
+
+        draw_button("Tạo Random S", btn_random, GRAY, btn_random.collidepoint(mouse_pos))
+        draw_button("Chạy SA", btn_sa, GRAY, btn_sa.collidepoint(mouse_pos))
+        draw_button("Reset về S", btn_reset, GRAY, btn_reset.collidepoint(mouse_pos))
+        
+        play_text = "Dừng / Chạy Animation" if is_animating else "Xem Lịch sử (Animation)"
+        draw_button(play_text, btn_stop_play, GREEN if is_animating else GRAY, btn_stop_play.collidepoint(mouse_pos))
+
+        info_surf = small_font.render(algo_info, True, TEXT_COLOR)
+        screen.blit(info_surf, (380, 170))
+
+        if history:
+            page = step_idx // 80
+            hist_title = ui_font.render(f"Lịch sử (Trang {page + 1}):", True, BLACK)
+            screen.blit(hist_title, (380, 210))
+            
+            start_idx = page * 80
+            end_idx = min(len(history), start_idx + 80)
+            
+            for i in range(start_idx, end_idx):
+                if i == 0: continue
+                move = history[i][0]
+                
+                display_idx = i - start_idx
+                col = display_idx // 20
+                row = display_idx % 20
+                x_pos = 380 + col * 190
+                y_pos = 250 + row * 22
+                
+                is_worse = "(Lùi)" in move
+                if i == step_idx:
+                    color = BLUE
+                    font_to_use = ui_font
+                elif is_worse:
+                    color = RED
+                    font_to_use = small_font
+                else:
+                    color = DARK_GRAY
+                    font_to_use = small_font
+                
+                step_text = font_to_use.render(f"Bước {i}: {move}", True, color)
+                screen.blit(step_text, (x_pos, y_pos))
+        else:
+            hist_title = ui_font.render("Lịch sử quá trình:", True, BLACK)
+            screen.blit(hist_title, (380, 210))
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+                
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if btn_random.collidepoint(mouse_pos):
+                    start_state = generate_random_state()
+                    current_state = start_state
+                    path = []
+                    history = []
+                    step_idx = 0
+                    is_animating = False
+                    algo_info = "Đã tạo trạng thái S mới."
+                    
+                elif btn_sa.collidepoint(mouse_pos) and not is_animating:
+                    algo_info = "Đang giải bằng Simulated Annealing..."
+                    pygame.display.flip()
+                    
+                    res_path, explored, success = simulated_annealing(start_state, G)
+                    history = [(p[1], p[0]) for p in res_path]
+                    
+                    if success:
+                        algo_info = f"[SA] Thành công. Lặp: {explored} | Đi thực tế: {len(res_path)-1} bước."
+                    else:
+                        algo_info = f"[SA] Thất bại (Hết nhiệt). Lặp: {explored} | Đi thực tế: {len(res_path)-1} bước."
+                        
+                    step_idx = 0
+                    is_animating = True
+                    
+                elif btn_reset.collidepoint(mouse_pos):
+                    current_state = start_state
+                    is_animating = False
+                    step_idx = 0
+                    if history:
+                        algo_info = "Đã đặt lại về trạng thái ban đầu S."
+                    
+                elif btn_stop_play.collidepoint(mouse_pos) and history:
+                    is_animating = not is_animating
+                    if is_animating and step_idx >= len(history) - 1:
+                        step_idx = 0
+                        current_state = history[0][1]
+
+        if is_animating and history:
+            now = pygame.time.get_ticks()
+            if now - last_update > 250: 
+                current_state = history[step_idx][1]
+                if step_idx < len(history) - 1:
+                    step_idx += 1
+                else:
+                    is_animating = False 
+                last_update = now
+
+        pygame.display.flip()
+
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
