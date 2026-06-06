@@ -1,8 +1,9 @@
 Trí Tuệ Nhân Tạo (ARIN330585)
+
 Chào mừng đến với repository cá nhân lưu trữ các học liệu, mã nguồn và báo cáo cho môn học **Trí Tuệ Nhân Tạo**.
 
 Thông tin sinh viên
-Họ và tên Nguyễn Hữu Vinh 
+Họ và tên Nguyễn Hữu Vinh
 Lớp 24110CTNB 
 Mã môn học ARIN330585
 
