@@ -1,0 +1,655 @@
+from __future__ import annotations
+
+import os
+import sys
+import math
+import csv
+import base64
+import html
+import textwrap
+import argparse
+from pathlib import Path
+from dataclasses import dataclass, field
+from collections import defaultdict
+from typing import Dict, List, Tuple, Optional, Set
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+DIAG_REGIONS = [
+    "Linh Xuân", "Bình Chiểu", "Linh Trung", "Tam Bình", "Tam Phú",
+    "Hiệp Bình Phước", "Hiệp Bình Chánh", "Linh Đông", "Linh Tây",
+    "Linh Chiểu", "Trường Thọ", "Bình Thọ"
+]
+
+DIAG_EDGES = [
+    ("Linh Xuân", "Bình Chiểu"), ("Linh Xuân", "Linh Trung"),
+    ("Bình Chiểu", "Tam Bình"), ("Bình Chiểu", "Tam Phú"),
+    ("Linh Trung", "Tam Phú"), ("Linh Trung", "Linh Tây"),
+    ("Tam Bình", "Hiệp Bình Phước"), ("Tam Bình", "Tam Phú"),
+    ("Tam Phú", "Hiệp Bình Chánh"), ("Tam Phú", "Linh Đông"),
+    ("Hiệp Bình Phước", "Hiệp Bình Chánh"), ("Hiệp Bình Chánh", "Linh Đông"),
+    ("Linh Đông", "Linh Tây"), ("Linh Đông", "Bình Thọ"),
+    ("Linh Tây", "Linh Chiểu"), ("Linh Chiểu", "Trường Thọ"),
+    ("Linh Chiểu", "Bình Thọ"), ("Trường Thọ", "Bình Thọ")
+]
+
+MAP_POSITIONS = {
+    "Linh Xuân": (0.2, 4.2), "Bình Chiểu": (2.1, 4.2), "Linh Trung": (0.9, 3.2),
+    "Tam Bình": (3.6, 3.2), "Tam Phú": (2.1, 2.6), "Hiệp Bình Phước": (5.4, 3.2),
+    "Hiệp Bình Chánh": (5.1, 2.0), "Linh Đông": (3.1, 1.6), "Linh Tây": (1.25, 1.6),
+    "Linh Chiểu": (0.8, 0.55), "Trường Thọ": (2.45, 0.15), "Bình Thọ": (4.15, 0.55)
+}
+
+PALETTES_CONFIG = {
+    3: [("Đỏ", "#ffb3b3"), ("Xanh", "#b9dcff"), ("Vàng", "#fff0a6")],
+    4: [("Đỏ", "#ffb3b3"), ("Xanh", "#b9dcff"), ("Vàng", "#fff0a6"), ("Tím", "#dfc8ff")],
+    5: [("Đỏ", "#ffb3b3"), ("Xanh", "#b9dcff"), ("Vàng", "#fff0a6"), ("Tím", "#dfc8ff"), ("Xanh lá", "#c9f7c5")]
+}
+
+STRATEGY_LABELS = {
+    "normal": "Backtracking cơ bản (Theo thứ tự)",
+    "degree": "Backtracking ưu tiên bậc lớn (Degree Heuristic)",
+    "mrv": "Backtracking tối ưu MRV + Degree Heuristic",
+    "greedy": "Tham lam (Greedy Coloring - Bậc lớn trước)"
+}
+
+@dataclass
+class StateNode:
+    node_id: int
+    parent_id: Optional[int]
+    label: str
+    status: str
+    depth: int
+
+@dataclass
+class ExecutionResult:
+    is_success: bool
+    coloring_map: Dict[str, str]
+    execution_tree: List[StateNode]
+    execution_logs: List[str]
+    output_path: Path
+    graph_img_path: Path
+    tree_img_path: Path
+    csv_path: Path
+    html_path: Path
+    metrics: Dict[str, int]
+
+def convert_edges_to_str(edges: List[Tuple[str, str]]) -> str:
+    return "\n".join(f"{u} - {v}" for u, v in edges)
+
+def parse_graph_inputs(raw_text: str) -> Tuple[List[str], List[Tuple[str, str]]]:
+    parsed_edges: List[Tuple[str, str]] = []
+    unique_regions: List[str] = []
+
+    for idx, raw_line in enumerate(raw_text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        for delimiter in [" - ", ",", "-"]:
+            if delimiter in line:
+                nodes = line.split(delimiter, 1)
+                break
+        else:
+            raise ValueError(f"Dòng {idx} sai cú pháp định dạng: '{raw_line}'. Vui lòng dùng: Vùng A - Vùng B")
+
+        u, v = nodes[0].strip(), nodes[1].strip()
+        if not u or not v:
+            raise ValueError(f"Dòng {idx} bị thiếu thông tin tên khu vực.")
+        if u == v:
+            raise ValueError(f"Dòng {idx} lỗi: Vùng '{u}' không thể tự kề chính nó.")
+
+        if (u, v) not in parsed_edges and (v, u) not in parsed_edges:
+            parsed_edges.append((u, v))
+
+        if u not in unique_regions: unique_regions.append(u)
+        if v not in unique_regions: unique_regions.append(v)
+
+    if not parsed_edges:
+        raise ValueError("Lỗi: Danh sách quan hệ kề (cạnh) đang trống.")
+
+    return unique_regions, parsed_edges
+
+class MapColoringSolver:
+    def __init__(self, regions: List[str], edges: List[Tuple[str, str]], colors: List[str], strategy: str):
+        self.regions = regions
+        self.edges = edges
+        self.colors = colors
+        self.strategy = strategy
+        
+        self.adjacency_list: Dict[str, List[str]] = defaultdict(list)
+        self._initialize_graph()
+
+        self.current_assignment: Dict[str, str] = {}
+        self.tree_nodes: List[StateNode] = []
+        self.logs: List[str] = []
+
+        self.counter_tries = 0
+        self.counter_violations = 0
+        self.counter_backtracks = 0
+
+    def _initialize_graph(self):
+        for u, v in self.edges:
+            if v not in self.adjacency_list[u]: self.adjacency_list[u].append(v)
+            if u not in self.adjacency_list[v]: self.adjacency_list[v].append(u)
+        for r in self.regions:
+            self.adjacency_list.setdefault(r, [])
+
+    def get_degree(self, region: str) -> int:
+        return len(self.adjacency_list.get(region, []))
+
+    def append_state_node(self, parent_id: Optional[int], label: str, status: str, depth: int) -> int:
+        new_id = len(self.tree_nodes)
+        self.tree_nodes.append(StateNode(new_id, parent_id, label, status, depth))
+        return new_id
+
+    def verify_safety(self, region: str, color: str) -> Tuple[bool, str]:
+        for neighbor in self.adjacency_list[region]:
+            if self.current_assignment.get(neighbor) == color:
+                return False, f"Xung đột màu với {neighbor}"
+        return True, "Hợp lệ"
+
+    def get_valid_colors(self, region: str) -> List[str]:
+        return [c for c in self.colors if self.verify_safety(region, c)[0]]
+
+    def pick_next_region(self) -> Optional[str]:
+        unassigned = [r for r in self.regions if r not in self.current_assignment]
+        if not unassigned:
+            return None
+
+        if self.strategy == "normal":
+            return unassigned[0]
+        if self.strategy in ("degree", "greedy"):
+            return max(unassigned, key=lambda r: self.get_degree(r))
+        
+        return min(unassigned, key=lambda r: (len(self.get_valid_colors(r)), -self.get_degree(r)))
+
+    def execute_solve(self) -> bool:
+        self.current_assignment.clear()
+        self.tree_nodes.clear()
+        self.logs.clear()
+        
+        self.counter_tries = 0
+        self.counter_violations = 0
+        self.counter_backtracks = 0
+
+        if self.strategy == "greedy":
+            return self._solve_with_greedy()
+
+        root_node_id = self.append_state_node(None, "Khởi tạo\nAssignment = {}", "root", 0)
+        self.logs.extend([
+            "Khởi chạy tiến trình thuật toán Backtracking.",
+            f"Chiến lược áp dụng: {STRATEGY_LABELS.get(self.strategy, self.strategy)}",
+            f"Thông số quy mô: {len(self.regions)} vùng | {len(self.edges)} quan hệ kề",
+            f"Danh sách màu chọn lựa: {', '.join(self.colors)}",
+            "=" * 70
+        ])
+
+        is_found = self._backtrack_recursive(parent_id=root_node_id, depth=0)
+        self.logs.extend(["=" * 70, f"KẾT LUẬN: { 'Đã tìm thấy lời giải hợp lệ.' if is_found else 'Không tồn tại phương án khả thi.'}"])
+        return is_found
+
+    def _backtrack_recursive(self, parent_id: int, depth: int) -> bool:
+        if len(self.current_assignment) == len(self.regions):
+            self.append_state_node(parent_id, "THÀNH CÔNG\nTìm thấy nghiệm", "solution", depth + 1)
+            return True
+
+        target_region = self.pick_next_region()
+        if target_region is None:
+            return False
+
+        self.logs.append(f"Chọn vùng xử lý tiếp theo: {target_region}")
+
+        for color in self.colors:
+            self.counter_tries += 1
+            is_safe, msg = self.verify_safety(target_region, color)
+
+            if is_safe:
+                self.current_assignment[target_region] = color
+                child_id = self.append_state_node(parent_id, f"{target_region} = {color}\nKhả thi", "ok", depth + 1)
+                self.logs.append(f" -> Thử gán: {target_region} = {color} [Thành công]")
+
+                if self._backtrack_recursive(child_id, depth + 1):
+                    return True
+
+                self.counter_backtracks += 1
+                self.logs.append(f" <- [Quay lui] Thu hồi màu của {target_region} = {color}")
+                self.tree_nodes[child_id].status = "backtrack"
+                self.tree_nodes[child_id].label = f"{target_region} = {color}\nQuay lui"
+                del self.current_assignment[target_region]
+            else:
+                self.counter_violations += 1
+                self.append_state_node(parent_id, f"{target_region} = {color}\nXung đột\n({msg})", "violation", depth + 1)
+                self.logs.append(f" -> Thử gán: {target_region} = {color} [Thất bại: {msg}]")
+
+        return False
+
+    def _solve_with_greedy(self) -> bool:
+        start_id = self.append_state_node(None, "Greedy Strategy", "root", 0)
+        curr_parent = start_id
+        
+        sorted_order = sorted(self.regions, key=lambda r: self.get_degree(r), reverse=True)
+        self.logs.extend([
+            "Khởi chạy giải thuật Tham lam (Greedy Coloring).",
+            f"Thứ tự duyệt ưu tiên bậc: {' -> '.join(sorted_order)}",
+            "=" * 70
+        ])
+
+        for depth, region in enumerate(sorted_order, start=1):
+            is_colored = False
+            for color in self.colors:
+                self.counter_tries += 1
+                is_safe, reason = self.verify_safety(region, color)
+
+                if is_safe:
+                    self.current_assignment[region] = color
+                    curr_parent = self.append_state_node(curr_parent, f"{region} = {color}\nOK", "ok", depth)
+                    self.logs.append(f"Áp đặt: {region} = {color} -> Thành công")
+                    is_colored = True
+                    break
+                
+                self.counter_violations += 1
+                self.append_state_node(curr_parent, f"{region} = {color}\nVi phạm\n{reason}", "violation", depth)
+                self.logs.append(f"Thử gán lỗi tại {region} = {color} ({reason})")
+
+            if not is_colored:
+                self.logs.append(f"Lỗi hệ thống: Giải thuật Greedy thất bại bế tắc tại vùng [{region}]")
+                return False
+
+        self.append_state_node(curr_parent, "HOÀN THÀNH\nGreedy tìm được nghiệm", "solution", len(sorted_order) + 1)
+        self.logs.extend(["=" * 70, "KẾT LUẬN: Thuật toán Tham lam tìm ra phương án thành công."])
+        return True
+
+    def self_validate(self) -> Tuple[bool, List[str]]:
+        issues = []
+        for r in self.regions:
+            if r not in self.current_assignment:
+                issues.append(f"Vùng '{r}' chưa được phân bổ màu.")
+        for u, v in self.edges:
+            if self.current_assignment.get(u) == self.current_assignment.get(v):
+                issues.append(f"Cạnh kề sai luật: '{u}' và '{v}' cùng nhận màu '{self.current_assignment.get(u)}'")
+        return len(issues) == 0, issues
+
+def generate_layout_positions(regions: List[str]) -> Dict[str, Tuple[float, float]]:
+    layout_pos = dict(MAP_POSITIONS)
+    missing = [r for r in regions if r not in layout_pos]
+    if not missing:
+        return layout_pos
+
+    cx, cy, radius = 3.0, 2.0, 2.5
+    for idx, r in enumerate(missing):
+        angle = 2 * math.pi * idx / max(len(missing), 1)
+        layout_pos[r] = (cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+    return layout_pos
+
+def fetch_hex_color(name: str, total_colors: int) -> str:
+    for c_name, hex_code in PALETTES_CONFIG[total_colors]:
+        if c_name == name: return hex_code
+    return "#ffffff"
+
+def render_colored_graph(solver: MapColoringSolver, total_colors: int, save_path: Path):
+    positions = generate_layout_positions(solver.regions)
+    fig, ax = plt.subplots(figsize=(12, 7.5))
+
+    for u, v in solver.edges:
+        x1, y1 = positions[u]
+        x2, y2 = positions[v]
+        ax.plot([x1, x2], [y1, y2], color="#4b5563", linewidth=1.5, zorder=1)
+
+    for region in solver.regions:
+        x, y = positions[region]
+        c_name = solver.current_assignment.get(region, "Trống")
+        hex_color = fetch_hex_color(c_name, total_colors)
+
+        ax.scatter(x, y, s=2400, color=hex_color, edgecolors="#111827", linewidths=1.8, zorder=3)
+        label_text = f"{region}\n({c_name})\nBậc: {solver.get_degree(region)}"
+        ax.text(x, y, label_text, ha="center", va="center", fontsize=8, fontweight="bold", zorder=4)
+
+    ax.set_title("BẢN ĐỒ TÔ MÀU ĐỒ THỊ KHU VỰC THỦ ĐỨC", fontsize=14, fontweight="bold", pad=15)
+    ax.axis("off")
+    ax.margins(0.15)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+def format_node_text(text: str, line_width: int = 16) -> str:
+    lines = []
+    for section in text.splitlines():
+        lines.extend(textwrap.wrap(section, width=line_width) or [section])
+    return "\n".join(lines[:4] + ["..."] if len(lines) > 4 else lines)
+
+def render_backtrack_tree(tree_nodes: List[StateNode], save_path: Path, max_nodes_display: int):
+    if not tree_nodes:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, "Không có dữ liệu cây quyết định hiển thị", ha="center", va="center")
+        ax.axis("off")
+        fig.savefig(save_path, dpi=200)
+        plt.close(fig)
+        return
+
+    subset_nodes = tree_nodes[:max_nodes_display]
+    subset_ids = {n.node_id for n in subset_nodes}
+    
+    tree_map: Dict[int, List[int]] = defaultdict(list)
+    for n in subset_nodes:
+        if n.parent_id is not None and n.parent_id in subset_ids:
+            tree_map[n.parent_id].append(n.node_id)
+
+    root_id = subset_nodes[0].node_id
+    positions: Dict[int, Tuple[float, float]] = {}
+    current_x = [0.0]
+
+    def compute_layout(node_id: int, current_depth: int) -> float:
+        sub_children = tree_map.get(node_id, [])
+        if not sub_children:
+            x_pos = current_x[0]
+            current_x[0] += 1.0
+        else:
+            child_xs = [compute_layout(c, current_depth + 1) for c in sub_children]
+            x_pos = sum(child_xs) / len(child_xs)
+        positions[node_id] = (x_pos, -current_depth)
+        return x_pos
+
+    compute_layout(root_id, 0)
+    fig_w = max(12, min(32, current_x[0] * 0.6))
+    fig_h = max(7, min(24, max(n.depth for n in subset_nodes) * 1.2 + 2))
+    
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    for n in subset_nodes:
+        if n.parent_id in positions and n.node_id in positions:
+            x1, y1 = positions[n.parent_id]
+            x2, y2 = positions[n.node_id]
+            ax.plot([x1, x2], [y1, y2], color="#9ca3af", linewidth=1.0, zorder=1)
+
+    styles = {
+        "root": ("#e5e7eb", "#374151"), "ok": ("#bbf7d0", "#16a34a"),
+        "violation": ("#fee2e2", "#dc2626"), "backtrack": ("#f3f4f6", "#9ca3af"),
+        "solution": ("#bfdbfe", "#2563eb")
+    }
+
+    for n in subset_nodes:
+        x, y = positions[n.node_id]
+        bg_c, edge_c = styles.get(n.status, ("#ffffff", "#000000"))
+        ax.scatter(x, y, s=1700, color=bg_c, edgecolors=edge_c, linewidths=1.2, zorder=3)
+        ax.text(x, y, format_node_text(n.label), ha="center", va="center", fontsize=6.5, zorder=4)
+
+    title_str = f"Cây Tìm Kiếm Không Gian Trạng Thái (Backtracking Tree) - Hiển thị {len(subset_nodes)}/{len(tree_nodes)} Nodes"
+    ax.set_title(title_str, fontsize=14, fontweight="bold")
+    ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+def export_to_csv_format(solver: MapColoringSolver, path: Path):
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Khu vực hành chính", "Màu gán", "Bậc liên kết", "Vùng giáp ranh kề"])
+        for r in solver.regions:
+            writer.writerow([r, solver.current_assignment.get(r, ""), solver.get_degree(r), ", ".join(solver.adjacency_list[r])])
+
+def compose_html_report(solver: MapColoringSolver, is_found: bool, color_cnt: int, strategy: str, img_graph: Path, img_tree: Path, out_path: Path):
+    graph_base64 = base64.b64encode(img_graph.read_bytes()).decode("utf-8")
+    tree_base64 = base64.b64encode(img_tree.read_bytes()).decode("utf-8")
+    is_valid, validation_errors = solver.self_validate()
+
+    status_class = "success" if (is_found and is_valid) else "warning"
+    status_title = "KẾT QUẢ: TÌM ĐƯỢC PHƯƠNG ÁN HỢP LỆ" if (is_found and is_valid) else "KẾT QUẢ: KHÔNG TÌM ĐƯỢC NGHIỆM KHẢ THI"
+    
+    err_html = "<ul>" + "".join(f"<li>{html.escape(e)}</li>" for e in validation_errors) + "</ul>" if validation_errors else "<p class='ok-text'>Hệ thống kiểm tra: Đạt điều kiện ràng buộc đồ thị phẳng.</p>"
+    log_content = "<br>".join(html.escape(line) for line in solver.logs)
+
+    table_rows = "".join(f"""
+        <tr>
+            <td><b>{html.escape(r)}</b></td>
+            <td><span class='color-badge'>{html.escape(solver.current_assignment.get(r, 'Chưa tô'))}</span></td>
+            <td>{solver.get_degree(r)}</td>
+            <td>{html.escape(', '.join(solver.adjacency_list[r]))}</td>
+        </tr>""" for r in solver.regions)
+
+    html_template = f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Báo Cáo Nghiên Cứu Graph Coloring</title>
+    <style>
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f8fafc; margin: 0; color: #334155; }}
+        .header {{ background: linear-gradient(135deg, #0f172a, #1e3a8a); color: white; padding: 35px; text-align: center; }}
+        .wrapper {{ max-width: 1100px; margin: 25px auto; padding: 0 15px; }}
+        .card {{ background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 20px; }}
+        .success {{ border-left: 6px solid #10b981; background: #ecfdf5; color: #065f46; }}
+        .warning {{ border-left: 6px solid #ef4444; background: #fef2f2; color: #991b1b; }}
+        .metric-container {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px; }}
+        .metric-box {{ background: white; padding: 15px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+        .metric-num {{ font-size: 24px; font-weight: bold; color: #1e40af; }}
+        .metric-label {{ font-size: 12px; color: #64748b; margin-top: 5px; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }}
+        th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }}
+        th {{ background: #f1f5f9; color: #1e293b; font-weight: 600; }}
+        img {{ width: 100%; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; margin-top: 10px; }}
+        .color-badge {{ background: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 20px; font-weight: bold; }}
+        .console-log {{ background: #1e293b; color: #f8fafc; padding: 15px; border-radius: 8px; font-family: monospace; max-height: 350px; overflow-y: auto; font-size: 12px; line-height: 1.6; }}
+        .ok-text {{ color: #059669; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1 style="margin:0; font-size:26px;">Báo Cáo Phân Tích Kỹ Thuật Tô Màu Đồ Thị</h1>
+        <p style="margin:5px 0 0; opacity:0.8;">Giải thuật: {html.escape(STRATEGY_LABELS.get(strategy, strategy))}</p>
+    </div>
+    <div class="wrapper">
+        <div class="card {status_class}">
+            <h2 style="margin-top:0; font-size:18px;">{status_title}</h2>
+            {err_html}
+        </div>
+        <div class="metric-container">
+            <div class="metric-box"><div class="metric-num">{len(solver.regions)}</div><div class="metric-label">Số Khu Vực</div></div>
+            <div class="metric-box"><div class="metric-num">{len(solver.edges)}</div><div class="metric-label">Số Cạnh Liên Kết</div></div>
+            <div class="metric-box"><div class="metric-num">{color_cnt}</div><div class="metric-label">Số Màu Sử Dụng</div></div>
+            <div class="metric-box"><div class="metric-num">{solver.counter_tries}</div><div class="metric-label">Tổng Lần Thử</div></div>
+            <div class="metric-box"><div class="metric-num">{solver.counter_backtracks}</div><div class="metric-label">Số Lần Quay Lui</div></div>
+        </div>
+        <div class="card">
+            <h3>Trực quan hóa Bản đồ phẳng (Đồ thị Kề)</h3>
+            <img src="data:image/png;base64,{graph_base64}" alt="Graph Map Visual">
+        </div>
+        <div class="card">
+            <h3>Cây Tìm Kiếm Không Gian Trạng Thái</h3>
+            <img src="data:image/png;base64,{tree_base64}" alt="Search Tree Visual">
+        </div>
+        <div class="card">
+            <h3>Chi Tiết Phân Bổ Bản Đồ</h3>
+            <table>
+                <thead>
+                    <tr><th>Khu vực</th><th>Màu được chỉ định</th><th>Bậc (Degree)</th><th>Khu vực giáp ranh</th></tr>
+                </thead>
+                <tbody>{table_rows}</tbody>
+            </table>
+        </div>
+        <div class="card">
+            <h3>Nhật Ký Thực Thi Thuật Toán</h3>
+            <div class="console-log">{log_content}</div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+    out_path.write_text(html_template, encoding="utf-8")
+
+def execute_coloring_pipeline(
+    color_count: int = 3,
+    strategy: str = "mrv",
+    custom_edges_text: Optional[str] = None,
+    max_visible_tree_nodes: int = 120,
+    output_directory: str = "output_graph_coloring_pro",
+    trigger_notebook_view: bool = True
+) -> ExecutionResult:
+    
+    if color_count not in PALETTES_CONFIG:
+        raise ValueError("Yêu cầu tham số color_count phải nằm trong tập hợp [3, 4, 5]")
+    if strategy not in STRATEGY_LABELS:
+        raise ValueError(f"Chiến lược '{strategy}' không hợp lệ. Chọn lọc từ: {list(STRATEGY_LABELS.keys())}")
+
+    if custom_edges_text is None:
+        regions, edges = list(DIAG_REGIONS), list(DIAG_EDGES)
+    else:
+        regions, edges = parse_graph_inputs(custom_edges_text)
+
+    available_colors = [name for name, _ in PALETTES_CONFIG[color_count]]
+    
+    solver = MapColoringSolver(regions, edges, available_colors, strategy)
+    found_solution = solver.execute_solve()
+
+    target_dir = Path(output_directory)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    img_graph_p = target_dir / "visual_colored_map.png"
+    img_tree_p = target_dir / "visual_execution_tree.png"
+    csv_p = target_dir / "data_coloring_report.csv"
+    html_p = target_dir / "dashboard_report.html"
+
+    render_colored_graph(solver, color_count, img_graph_p)
+    render_backtrack_tree(solver.tree_nodes, img_tree_p, max_visible_tree_nodes)
+    export_to_csv_format(solver, csv_p)
+    compose_html_report(solver, found_solution, color_count, strategy, img_graph_p, img_tree_p, html_p)
+
+    metrics_block = {
+        "regions_count": len(solver.regions), "edges_count": len(solver.edges),
+        "colors_used": color_count, "total_attempts": solver.counter_tries,
+        "violations_found": solver.counter_violations, "backtracks_performed": solver.counter_backtracks,
+        "total_tree_nodes": len(solver.tree_nodes)
+    }
+
+    print_cli_dashboard(solver, found_solution, color_count, strategy, img_graph_p, img_tree_p, csv_p, html_p)
+
+    if trigger_notebook_view:
+        try:
+            from IPython.display import HTML, display
+            display(HTML(html_p.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+
+    return ExecutionResult(
+        is_success=found_solution, coloring_map=dict(solver.current_assignment),
+        execution_tree=list(solver.tree_nodes), execution_logs=list(solver.logs),
+        output_path=target_dir, graph_img_path=img_graph_p, tree_img_path=img_tree_p,
+        csv_path=csv_p, html_path=html_p, metrics=metrics_block
+    )
+
+def print_cli_dashboard(solver, solved, color_num, strat, img_g, img_t, csv_f, html_f):
+    border = "=" * 70
+    print(border)
+    print("      HỆ THỐNG PHÂN TÍCH ĐỒ THỊ TÔ MÀU PHẲNG - THỦ ĐỨC CORESYNC     ")
+    print(border)
+    print(f"Trạng thái phương án : {'[THÀNH CÔNG] ĐÃ TÌM THẤY NGHIỆM' if solved else '[THẤT BẠI] VÔ NGHIỆM'}")
+    print(f"Thuật toán áp dụng  : {STRATEGY_LABELS[strat]}")
+    print(f"Số lượng màu cấu hình: {color_num}")
+    print(f"Quy mô tài nguyên    : {len(solver.regions)} vùng | {len(solver.edges)} cạnh")
+    print(f"Chỉ số chu kỳ tìm kiếm: {solver.counter_tries} lần thử | {solver.counter_backtracks} lần quay lui")
+    print("-" * 70)
+    print("BẢNG ĐỊNH VỊ MÀU CHI TIẾT:")
+    for region in solver.regions:
+        print(f"  * {region:20s} ---> {solver.current_assignment.get(region, 'Chưa được phân bổ')}")
+    print("-" * 70)
+    print("HỆ THỐNG FILE KẾT XUẤT:")
+    print(f"  [Ảnh Đồ Thị Map] -> {img_g}")
+    print(f"  [Ảnh Cây Trạng Thái] -> {img_t}")
+    print(f"  [Tệp Dữ Liệu CSV] -> {csv_f}")
+    print(f"  [Báo Cáo HTML]    -> {html_f}")
+    print(border)
+
+def deploy_interactive_widgets():
+    try:
+        import ipywidgets as widgets
+        from IPython.display import display, clear_output
+    except ImportError:
+        print("[Thông báo] ipywidgets chưa được cài đặt. Hệ thống chuyển hướng tự động chạy CLI.")
+        execute_coloring_pipeline(color_count=3, strategy="mrv", trigger_notebook_view=False)
+        return
+
+    banner = widgets.HTML("""
+        <div style="background: linear-gradient(135deg, #2563eb, #4f46e5); color: white; padding: 15px 20px; border-radius: 10px; margin-bottom: 15px;">
+            <h3 style="margin: 0; font-size: 20px;">Đồ Thị Tô Màu Thủ Đức - Interactive Dashboard</h3>
+            <p style="margin: 5px 0 0; font-size: 13px; opacity: 0.9;">Tùy biến cấu hình mô phỏng, thuật toán phân rã cấu trúc không gian trạng thái.</p>
+        </div>
+    """)
+
+    w_colors = widgets.Dropdown(options=[("3 Màu Cơ Bản", 3), ("4 Màu Nâng Cao", 4), ("5 Màu Toàn Diện", 5)], value=3, description="Số lượng màu:")
+    w_strategy = widgets.Dropdown(options=[(label, key) for key, label in STRATEGY_LABELS.items()], value="mrv", description="Toán tử giải:")
+    w_slider = widgets.IntSlider(value=120, min=20, max=400, step=10, description="Max Node cây:")
+    w_output_path = widgets.Text(value="output_graph_coloring_pro", description="Thư mục xuất:")
+    w_edges_input = widgets.Textarea(value=convert_edges_to_str(DIAG_EDGES), description="Dữ liệu cạnh kề:", layout=widgets.Layout(width="100%", height="200px"))
+    
+    help_box = widgets.HTML("""
+        <div style="background: #f0fdf4; border-left: 4px solid #22c55e; padding: 10px; border-radius: 4px; margin: 10px 0; font-size: 12px; color: #166534;">
+            <b>Cú pháp nạp dữ liệu cạnh tùy biến:</b> Cứ mỗi dòng biểu diễn một liên kết gạch ngang. Ví dụ: <code>Tên Vùng A - Tên Vùng B</code>
+        </div>
+    """)
+
+    btn_run = widgets.Button(description="Bắt Đầu Tính Toán", button_style="success", icon="play")
+    btn_reset = widgets.Button(description="Thiết Lập Mặc Định", button_style="warning", icon="undo")
+    ui_output = widgets.Output()
+
+    def click_reset_handler(_b):
+        w_colors.value, w_strategy.value, w_slider.value = 3, "mrv", 120
+        w_output_path.value = "output_graph_coloring_pro"
+        w_edges_input.value = convert_edges_to_str(DIAG_EDGES)
+        with ui_output:
+            clear_output()
+            print("Đã hoàn tác cấu hình mặc định ban đầu.")
+
+    def click_run_handler(_b):
+        with ui_output:
+            clear_output()
+            try:
+                execute_coloring_pipeline(
+                    color_count=w_colors.value, strategy=w_strategy.value,
+                    custom_edges_text=w_edges_input.value, max_visible_tree_nodes=w_slider.value,
+                    output_directory=w_output_path.value, trigger_notebook_view=True
+                )
+            except Exception as error:
+                print(f"[LỖI THỰC THI]: {error}")
+
+    btn_run.on_click(click_run_handler)
+    btn_reset.on_click(click_reset_handler)
+
+    layout_box = widgets.VBox([
+        banner, widgets.HBox([w_colors, w_strategy]), w_slider, w_output_path,
+        help_box, w_edges_input, widgets.HBox([btn_run, btn_reset]), ui_output
+    ])
+    display(layout_box)
+
+def is_running_in_jupyter() -> bool:
+    try:
+        from IPython import get_ipython
+        return get_ipython() is not None
+    except Exception:
+        return False
+
+def main():
+    parser = argparse.ArgumentParser(description="Công Cụ Tô Màu Đồ Thị Coresync Graph Coloring Tool CLI.")
+    parser.add_argument("--mode", choices=["auto", "widget", "cli"], default="auto", help="Chế độ vận hành (Mặc định: auto)")
+    parser.add_argument("--colors", type=int, choices=[3, 4, 5], default=3, help="Cấu hình số lượng màu")
+    parser.add_argument("--strategy", choices=["normal", "degree", "mrv", "greedy"], default="mrv", help="Lựa chọn giải thuật")
+    parser.add_argument("--max-nodes", type=int, default=120, help="Giới hạn node vẽ trên cây")
+    parser.add_argument("--out-dir", default="output_graph_coloring_pro", help="Thư mục ghi nhận kết quả")
+    
+    args, _ = parser.parse_known_args()
+
+    if args.mode == "widget":
+        deploy_interactive_widgets()
+        return
+
+    if args.mode == "cli":
+        execute_coloring_pipeline(color_count=args.colors, strategy=args.strategy, max_visible_tree_nodes=args.max_nodes, output_directory=args.out_dir, trigger_notebook_view=False)
+        return
+
+    if is_running_in_jupyter():
+        deploy_interactive_widgets()
+    else:
+        execute_coloring_pipeline(color_count=args.colors, strategy=args.strategy, max_visible_tree_nodes=args.max_nodes, output_directory=args.out_dir, trigger_notebook_view=False)
+
+if __name__ == "__main__":
+    main()
