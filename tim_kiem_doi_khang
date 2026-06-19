@@ -1,0 +1,332 @@
+import random
+import time
+import copy
+import pygame
+
+pygame.init()
+pygame.font.init()
+
+WIDTH, HEIGHT = 800, 600
+SCREEN = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("8-Puzzle Solver: Minimax, Alpha-Beta, Expectimax")
+
+BG_COLOR = (240, 244, 248)
+TILE_COLOR = (74, 144, 226)
+TEXT_COLOR = (255, 255, 255)
+PANEL_COLOR = (255, 255, 255)
+BTN_COLOR = (53, 73, 94)
+BTN_HOVER = (41, 128, 185)
+ACTIVE_COLOR = (46, 204, 113)
+
+FONT_TILE = pygame.font.SysFont("Arial", 40, bold=True)
+FONT_UI = pygame.font.SysFont("Arial", 16, bold=True)
+
+GOAL = [1, 2, 3, 4, 5, 6, 7, 8, 0]
+
+
+def get_moves(state):
+    moves = []
+    zero_idx = state.index(0)
+    row, col = zero_idx // 3, zero_idx % 3
+
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    for dr, dc in directions:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < 3 and 0 <= nc < 3:
+            new_idx = nr * 3 + nc
+            new_state = list(state)
+            new_state[zero_idx], new_state[new_idx] = (
+                new_state[new_idx],
+                new_state[zero_idx],
+            )
+            moves.append(new_state)
+    return moves
+
+
+def heuristic(state):
+    distance = 0
+    for i in range(9):
+        val = state[i]
+        if val != 0:
+            target_idx = GOAL.index(val)
+            r1, c1 = i // 3, i % 3
+            r2, c2 = target_idx // 3, target_idx % 3
+            distance += abs(r1 - r2) + abs(c1 - c2)
+    return distance
+
+
+def is_solvable(state):
+    inversions = 0
+    arr = [x for x in state if x != 0]
+    for i in range(len(arr)):
+        for j in range(i + 1, len(arr)):
+            if arr[i] > arr[j]:
+                inversions += 1
+    return inversions % 2 == 0
+
+
+def generate_random_state():
+    while True:
+        state = list(range(9))
+        random.shuffle(state)
+        if is_solvable(state) and state != GOAL:
+            return state
+
+
+def minimax(state, depth, is_maximizing):
+    if depth == 0 or state == GOAL:
+        return heuristic(state), state
+
+    children = get_moves(state)
+    if not children:
+        return heuristic(state), state
+
+    best_state = None
+    if is_maximizing:
+        max_eval = float("-inf")
+        for child in children:
+            eval_val, _ = minimax(child, depth - 1, False)
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_state = child
+        return max_eval, best_state
+    else:
+        min_eval = float("inf")
+        for child in children:
+            eval_val, _ = minimax(child, depth - 1, True)
+            if eval_val < min_eval:
+                min_eval = eval_val
+                best_state = child
+        return min_eval, best_state
+
+
+def alpha_beta(state, depth, alpha, beta, is_maximizing):
+    if depth == 0 or state == GOAL:
+        return heuristic(state), state
+
+    children = get_moves(state)
+    best_state = None
+
+    if is_maximizing:
+        max_eval = float("-inf")
+        for child in children:
+            eval_val, _ = alpha_beta(child, depth - 1, alpha, beta, False)
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_state = child
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval, best_state
+    else:
+        min_eval = float("inf")
+        for child in children:
+            eval_val, _ = alpha_beta(child, depth - 1, alpha, beta, True)
+            if eval_val < min_eval:
+                min_eval = eval_val
+                best_state = child
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval, best_state
+
+
+def expectimax(state, depth, is_maximizing):
+    if depth == 0 or state == GOAL:
+        return heuristic(state), state
+
+    children = get_moves(state)
+    if not children:
+        return heuristic(state), state
+
+    best_state = None
+    if is_maximizing:
+        max_eval = float("-inf")
+        for child in children:
+            eval_val, _ = expectimax(child, depth - 1, False)
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_state = child
+        return max_eval, best_state
+    else:
+        total_eval = 0
+        for child in children:
+            eval_val, _ = expectimax(child, depth - 1, True)
+            total_eval += eval_val
+        avg_eval = total_eval / len(children)
+        best_state = min(children, key=heuristic)
+        return avg_eval, best_state
+
+
+class Button:
+
+    def __init__(self, x, y, w, h, text, callback, id_val=None):
+        self.rect = pygame.Rect(x, y, w, h)
+        self.text = text
+        self.callback = callback
+        self.id = id_val
+
+    def draw(self, screen, active=False):
+        mouse_pos = pygame.mouse.get_pos()
+        color = BTN_HOVER if self.rect.collidepoint(mouse_pos) else BTN_COLOR
+        if active:
+            color = ACTIVE_COLOR
+
+        pygame.draw.rect(screen, color, self.rect, border_radius=5)
+        txt_surf = FONT_UI.render(self.text, True, TEXT_COLOR)
+        txt_rect = txt_surf.get_rect(center=self.rect.center)
+        screen.blit(txt_surf, txt_rect)
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                if self.id is not None:
+                    self.callback(self.id)
+                else:
+                    self.callback()
+
+
+class GamePuzzle:
+
+    def __init__(self):
+        self.state = [1, 2, 3, 4, 5, 6, 7, 8, 0]
+        self.history = [list(self.state)]
+        self.algo_selected = "Minimax"
+        self.is_solving = False
+        self.message = "Ready"
+
+        self.buttons = [
+            Button(550, 40, 200, 40, "Random Position", self.btn_random),
+            Button(550, 100, 200, 40, "Minimax", self.btn_select_algo, "Minimax"),
+            Button(
+                550,
+                150,
+                200,
+                40,
+                "Alpha-Beta",
+                self.btn_select_algo,
+                "Alpha-Beta",
+            ),
+            Button(
+                550,
+                200,
+                200,
+                40,
+                "Expectimax",
+                self.btn_select_algo,
+                "Expectimax",
+            ),
+            Button(550, 280, 200, 40, "Solve", self.btn_solve),
+            Button(550, 340, 200, 40, "Reset", self.btn_reset),
+        ]
+
+    def btn_random(self):
+        if self.is_solving:
+            return
+        self.state = generate_random_state()
+        self.history = [list(self.state)]
+        self.message = "Shuffled"
+
+    def btn_select_algo(self, algo_name):
+        if self.is_solving:
+            return
+        self.algo_selected = algo_name
+        self.message = f"Selected: {algo_name}"
+
+    def btn_reset(self):
+        self.is_solving = False
+        self.state = [1, 2, 3, 4, 5, 6, 7, 8, 0]
+        self.history = [list(self.state)]
+        self.message = "Reset Done"
+
+    def btn_solve(self):
+        if self.is_solving or self.state == GOAL:
+            return
+        self.is_solving = True
+        self.message = "Solving..."
+
+    def update_solving(self):
+        if not self.is_solving:
+            return
+
+        if self.state == GOAL:
+            self.is_solving = False
+            self.message = "Solved"
+            return
+
+        depth = 3
+
+        if self.algo_selected == "Minimax":
+            _, next_state = minimax(self.state, depth, is_maximizing=False)
+        elif self.algo_selected == "Alpha-Beta":
+            _, next_state = alpha_beta(
+                self.state, depth, float("-inf"), float("inf"), is_maximizing=False
+            )
+        elif self.algo_selected == "Expectimax":
+            _, next_state = expectimax(self.state, depth, is_maximizing=True)
+
+        if next_state and next_state != self.state:
+            self.state = next_state
+            self.history.append(list(self.state))
+            time.sleep(0.2)
+        else:
+            moves = get_moves(self.state)
+            self.state = min(moves, key=heuristic)
+            self.history.append(list(self.state))
+            time.sleep(0.2)
+
+    def draw(self, screen):
+        screen.fill(BG_COLOR)
+
+        board_rect = pygame.Rect(40, 40, 450, 450)
+        pygame.draw.rect(screen, (200, 200, 200), board_rect, border_radius=10)
+
+        for i in range(9):
+            val = self.state[i]
+            row, col = i // 3, i % 3
+            x = 40 + col * 150 + 5
+            y = 40 + row * 150 + 5
+
+            if val != 0:
+                tile_rect = pygame.Rect(x, y, 140, 140)
+                pygame.draw.rect(screen, TILE_COLOR, tile_rect, border_radius=8)
+                txt_surf = FONT_TILE.render(str(val), True, TEXT_COLOR)
+                txt_rect = txt_surf.get_rect(center=tile_rect.center)
+                screen.blit(txt_surf, txt_rect)
+
+        for btn in self.buttons:
+            is_active = btn.id == self.algo_selected
+            btn.draw(screen, active=is_active)
+
+        msg_surf = FONT_UI.render(f"Status: {self.message}", True, (50, 50, 50))
+        screen.blit(msg_surf, (40, 510))
+
+        history_text = f"Steps: {len(self.history) - 1}"
+        hist_surf = FONT_UI.render(history_text, True, (50, 50, 50))
+        screen.blit(hist_surf, (40, 540))
+
+
+def main():
+    clock = pygame.time.Clock()
+    game = GamePuzzle()
+    running = True
+
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            for btn in game.buttons:
+                btn.handle_event(event)
+
+        game.update_solving()
+        game.draw(SCREEN)
+
+        pygame.display.flip()
+        clock.tick(30)
+
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    main()
