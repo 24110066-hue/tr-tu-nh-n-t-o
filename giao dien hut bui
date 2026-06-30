@@ -1,0 +1,356 @@
+import pygame
+import random
+import heapq
+import math
+from collections import deque
+
+pygame.init()
+WIDTH, HEIGHT = 1000, 700
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Giao diện máy hút bụi ")
+font = pygame.font.SysFont("Arial", 20, bold=True)
+small_font = pygame.font.SysFont("Arial", 16, bold=True)
+log_font = pygame.font.SysFont("Arial", 14)
+
+BG_COLOR = (18, 18, 18)
+GRID_COLOR = (45, 45, 45)
+VACUUM_COLOR = (46, 204, 113)
+DIRT_COLOR = (231, 76, 60)
+PATH_COLOR = (241, 196, 15)
+TEXT_COLOR = (255, 255, 255)
+PANEL_COLOR = (30, 30, 30)
+BORDER_COLOR = (80, 80, 80)
+BTN_COLOR = (60, 60, 60)
+BTN_HOVER = (90, 90, 90)
+
+ROWS, COLS = 8, 8
+CELL_SIZE = 70
+
+class Node:
+    def __init__(self, r, c, parent=None, cost=0):
+        self.r = r
+        self.c = c
+        self.parent = parent
+        self.cost = cost
+
+    def __lt__(self, other):
+        return self.cost < other.cost
+
+def get_neighbors(r, c):
+    neighbors = []
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < ROWS and 0 <= nc < COLS:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def manhattan(r1, c1, r2, c2):
+    return abs(r1 - r2) + abs(c1 - c2)
+
+def reconstruct_path(node):
+    path = []
+    while node:
+        path.append((node.r, node.c))
+        node = node.parent
+    return path[::-1]
+
+def solve_bfs(start, target):
+    queue = deque([Node(start[0], start[1])])
+    visited = {start}
+    while queue:
+        curr = queue.popleft()
+        if (curr.r, curr.c) == target:
+            return reconstruct_path(curr)
+        for nr, nc in get_neighbors(curr.r, curr.c):
+            if (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append(Node(nr, nc, curr))
+    return []
+
+def solve_dfs(start, target):
+    stack = [Node(start[0], start[1])]
+    visited = {start}
+    while stack:
+        curr = stack.pop()
+        if (curr.r, curr.c) == target:
+            return reconstruct_path(curr)
+        for nr, nc in get_neighbors(curr.r, curr.c):
+            if (nr, nc) not in visited:
+                visited.add((nr, nc))
+                stack.append(Node(nr, nc, curr))
+    return []
+
+def solve_ucs(start, target):
+    queue = [(0, Node(start[0], start[1], cost=0))]
+    visited = set()
+    while queue:
+        cost, curr = heapq.heappop(queue)
+        if (curr.r, curr.c) == target:
+            return reconstruct_path(curr)
+        if (curr.r, curr.c) in visited: continue
+        visited.add((curr.r, curr.c))
+        for nr, nc in get_neighbors(curr.r, curr.c):
+            if (nr, nc) not in visited:
+                heapq.heappush(queue, (cost + 1, Node(nr, nc, curr, cost + 1)))
+    return []
+
+def solve_greedy(start, target):
+    queue = [(manhattan(start[0], start[1], target[0], target[1]), Node(start[0], start[1]))]
+    visited = {start}
+    while queue:
+        _, curr = heapq.heappop(queue)
+        if (curr.r, curr.c) == target:
+            return reconstruct_path(curr)
+        for nr, nc in get_neighbors(curr.r, curr.c):
+            if (nr, nc) not in visited:
+                visited.add((nr, nc))
+                h = manhattan(nr, nc, target[0], target[1])
+                heapq.heappush(queue, (h, Node(nr, nc, curr)))
+    return []
+
+def solve_astar(start, target):
+    start_node = Node(start[0], start[1], cost=0)
+    queue = [(manhattan(start[0], start[1], target[0], target[1]), start_node)]
+    visited = set()
+    while queue:
+        _, curr = heapq.heappop(queue)
+        if (curr.r, curr.c) == target:
+            return reconstruct_path(curr)
+        if (curr.r, curr.c) in visited: continue
+        visited.add((curr.r, curr.c))
+        for nr, nc in get_neighbors(curr.r, curr.c):
+            if (nr, nc) not in visited:
+                g = curr.cost + 1
+                f = g + manhattan(nr, nc, target[0], target[1])
+                heapq.heappush(queue, (f, Node(nr, nc, curr, g)))
+    return []
+
+def eval_state(pos, target):
+    return -manhattan(pos[0], pos[1], target[0], target[1])
+
+def minimax_eval(pos, target, depth, is_max):
+    if depth == 0 or pos == target:
+        return eval_state(pos, target)
+    if is_max:
+        v = -math.inf
+        for n in get_neighbors(*pos):
+            v = max(v, minimax_eval(n, target, depth - 1, False))
+        return v
+    else:
+        return minimax_eval(pos, target, depth - 1, True)
+
+def solve_minimax(start, target):
+    path = [start]
+    curr = start
+    while curr != target and len(path) < 64:
+        best_move, best_val = None, -math.inf
+        for n in get_neighbors(*curr):
+            val = minimax_eval(n, target, 3, False)
+            if val > best_val:
+                best_val, best_move = val, n
+        if not best_move: break
+        curr = best_move
+        path.append(curr)
+    return path
+
+def alpha_beta_eval(pos, target, depth, alpha, beta, is_max):
+    if depth == 0 or pos == target:
+        return eval_state(pos, target)
+    if is_max:
+        v = -math.inf
+        for n in get_neighbors(*pos):
+            v = max(v, alpha_beta_eval(n, target, depth - 1, alpha, beta, False))
+            alpha = max(alpha, v)
+            if beta <= alpha: break
+        return v
+    else:
+        v = math.inf
+        v = min(v, alpha_beta_eval(pos, target, depth - 1, alpha, beta, True))
+        beta = min(beta, v)
+        return v
+
+def solve_alpha_beta(start, target):
+    path = [start]
+    curr = start
+    while curr != target and len(path) < 64:
+        best_move, best_val = None, -math.inf
+        for n in get_neighbors(*curr):
+            val = alpha_beta_eval(n, target, 4, -math.inf, math.inf, False)
+            if val > best_val:
+                best_val, best_move = val, n
+        if not best_move: break
+        curr = best_move
+        path.append(curr)
+    return path
+
+def expectimax_eval(pos, target, depth, is_max):
+    if depth == 0 or pos == target:
+        return eval_state(pos, target)
+    if is_max:
+        v = -math.inf
+        for n in get_neighbors(*pos):
+            v = max(v, expectimax_eval(n, target, depth - 1, False))
+        return v
+    else:
+        neighbors = get_neighbors(*pos)
+        v = 0
+        for n in neighbors:
+            v += expectimax_eval(n, target, depth - 1, True)
+        return v / len(neighbors) if neighbors else 0
+
+def solve_expectimax(start, target):
+    path = [start]
+    curr = start
+    while curr != target and len(path) < 64:
+        best_move, best_val = None, -math.inf
+        for n in get_neighbors(*curr):
+            val = expectimax_eval(n, target, 3, False)
+            if val > best_val:
+                best_val, best_move = val, n
+        if not best_move: break
+        curr = best_move
+        path.append(curr)
+    return path
+
+class Button:
+    def __init__(self, x, y, w, h, text, action, is_action_btn=False):
+        self.rect = pygame.Rect(x, y, w, h)
+        self.text = text
+        self.action = action
+        self.base_color = (192, 57, 43) if is_action_btn else BTN_COLOR
+        self.hover_color = (231, 76, 60) if is_action_btn else BTN_HOVER
+
+    def draw(self, screen):
+        mouse_pos = pygame.mouse.get_pos()
+        color = self.hover_color if self.rect.collidepoint(mouse_pos) else self.base_color
+        pygame.draw.rect(screen, color, self.rect, border_radius=5)
+        txt_surf = log_font.render(self.text, True, TEXT_COLOR)
+        screen.blit(txt_surf, (self.rect.x + (self.rect.w - txt_surf.get_width())//2, self.rect.y + (self.rect.h - txt_surf.get_height())//2))
+
+    def click(self):
+        self.action()
+
+vacuum_pos = (0, 0)
+dirt_pos = (7, 7)
+solution_path = []
+path_index = 0
+auto_play = False
+history_logs = ["Máy hút bụi sẵn sàng!"]
+last_move_time = 0
+MOVE_DELAY = 150
+
+def run_algo(name, func):
+    global solution_path, path_index, auto_play, history_logs, vacuum_pos
+    vacuum_pos = (0, 0)
+    history_logs.append(f">> Chạy {name}...")
+    pygame.display.flip()
+    res = func(vacuum_pos, dirt_pos)
+    if res:
+        solution_path = res
+        path_index = 0
+        auto_play = True
+        history_logs.append(f"=> Tìm thấy đường đi: {len(res)-1} bước.")
+    else:
+        history_logs.append("=> Không tìm thấy đường!")
+
+def btn_random_dirt():
+    global dirt_pos, solution_path, auto_play, vacuum_pos, history_logs
+    while True:
+        r, c = random.randint(0, ROWS-1), random.randint(0, COLS-1)
+        if (r, c) != (0, 0):
+            dirt_pos = (r, c)
+            break
+    vacuum_pos = (0, 0)
+    solution_path = []
+    auto_play = False
+    history_logs.append(">> Đã đổi ngẫu nhiên vị trí vết bẩn.")
+
+def btn_reset():
+    global vacuum_pos, dirt_pos, solution_path, auto_play, history_logs
+    vacuum_pos = (0, 0)
+    dirt_pos = (7, 7)
+    solution_path = []
+    auto_play = False
+    history_logs.clear()
+    history_logs.append(">> Đã đặt lại hệ thống.")
+
+buttons = [
+    Button(620, 60, 160, 40, "BFS", lambda: run_algo("BFS", solve_bfs)),
+    Button(800, 60, 160, 40, "DFS", lambda: run_algo("DFS", solve_dfs)),
+    Button(620, 110, 160, 40, "UCS", lambda: run_algo("UCS", solve_ucs)),
+    Button(800, 110, 160, 40, "Greedy", lambda: run_algo("Greedy", solve_greedy)),
+    Button(620, 160, 160, 40, "A*", lambda: run_algo("A*", solve_astar)),
+    Button(800, 160, 160, 40, "Minimax", lambda: run_algo("Minimax", solve_minimax)),
+    Button(620, 210, 160, 40, "Alpha-Beta", lambda: run_algo("Alpha-Beta", solve_alpha_beta)),
+    Button(800, 210, 160, 40, "Expectimax", lambda: run_algo("Expectimax", solve_expectimax)),
+    Button(620, 270, 160, 40, "Random Vết Bẩn", btn_random_dirt, True),
+    Button(800, 270, 160, 40, "Reset", btn_reset, True)
+]
+
+running = True
+clock = pygame.time.Clock()
+
+while running:
+    screen.fill(BG_COLOR)
+    current_time = pygame.time.get_ticks()
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for btn in buttons:
+                if btn.rect.collidepoint(event.pos):
+                    btn.click()
+
+    if auto_play and solution_path and path_index < len(solution_path):
+        if current_time - last_move_time > MOVE_DELAY:
+            vacuum_pos = solution_path[path_index]
+            history_logs.append(f"Bước {path_index}: Đi tới {vacuum_pos}")
+            path_index += 1
+            last_move_time = current_time
+            if path_index == len(solution_path):
+                auto_play = False
+                history_logs.append("(*) Đã dọn sạch vết bẩn!")
+
+    grid_offset_x, grid_offset_y = 30, 60
+    pygame.draw.rect(screen, BORDER_COLOR, (grid_offset_x - 5, grid_offset_y - 5, COLS * CELL_SIZE + 10, ROWS * CELL_SIZE + 10), border_radius=8)
+    
+    for r in range(ROWS):
+        for c in range(COLS):
+            rect = pygame.Rect(grid_offset_x + c * CELL_SIZE, grid_offset_y + r * CELL_SIZE, CELL_SIZE - 2, CELL_SIZE - 2)
+            pygame.draw.rect(screen, GRID_COLOR, rect, border_radius=4)
+            
+            if (r, c) == dirt_pos:
+                pygame.draw.circle(screen, DIRT_COLOR, rect.center, CELL_SIZE // 3)
+            
+            if solution_path and (r, c) in solution_path[:path_index]:
+                pygame.draw.circle(screen, PATH_COLOR, rect.center, CELL_SIZE // 8)
+
+            if (r, c) == vacuum_pos:
+                pygame.draw.circle(screen, VACUUM_COLOR, rect.center, CELL_SIZE // 2.5)
+
+    btn_panel = pygame.Rect(600, 40, 380, 290)
+    pygame.draw.rect(screen, PANEL_COLOR, btn_panel, border_radius=10)
+    pygame.draw.rect(screen, BORDER_COLOR, btn_panel, width=2, border_radius=10)
+    
+    for btn in buttons:
+        btn.draw(screen)
+
+    log_panel = pygame.Rect(600, 350, 380, 310)
+    pygame.draw.rect(screen, PANEL_COLOR, log_panel, border_radius=10)
+    pygame.draw.rect(screen, BORDER_COLOR, log_panel, width=2, border_radius=10)
+    
+    log_title = small_font.render("LỊCH SỬ HOẠT ĐỘNG", True, TEXT_COLOR)
+    screen.blit(log_title, (620, 360))
+    pygame.draw.line(screen, BORDER_COLOR, (600, 385), (980, 385), 1)
+
+    start_y = 395
+    for log in history_logs[-11:]:
+        log_surf = log_font.render(log, True, (200, 200, 200))
+        screen.blit(log_surf, (620, start_y))
+        start_y += 24
+
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()
